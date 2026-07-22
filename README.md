@@ -1,1 +1,1 @@
-# scaling-ladder
+![scaling-ladder](./images/sl.svg)
