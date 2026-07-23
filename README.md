@@ -4,4 +4,4 @@
 
 ## 文章目录
 
-- [从零写一个PPO强化学习训练吃豆人](./blogs/how-to-write-ppo/README.md)
+- [从零写一个PPO强化学习训练吃豆人](./blogs/how-to-write-ppo/ppo-wechat.html)
