@@ -56,8 +56,9 @@ $$
 
 上式中 $A^{\theta'}(s, a)$ 表示当在环境状态 $s$ 下代理模型产生 $a$ 动作能在未来获取多少Reward总和(再减去Baseline)，也可以笼统称为优势函数。
 
-笔者写了一个简单的强化学习PPO训练吃豆人Demo (仅需要CPU即可训练)，链接：https://github.com/xytpai/policy-gradient-demo。以下代码片段可以清晰地体现PPO的训练过程：
+笔者写了一个简单的强化学习PPO训练吃豆人Demo (仅需要CPU即可训练)，链接：https://github.com/xytpai/policy-gradient-demo。
 
+以下代码片段可以清晰地体现PPO的训练过程：
 
 ```python
 import torch
