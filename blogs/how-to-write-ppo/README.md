@@ -13,7 +13,11 @@ $$
 其中 $p_{\theta}(\tau)$ 表示该模型走出路径 $\tau$ 的概率。确定目标函数后，我们可以使用 Gradient Ascent 来优化 $\theta$ ，因此先初步展开 Gradient 的算式：
 
 $$
-\nabla R_\theta = \sum_\tau reward(\tau) \nabla p_\theta(\tau) \\ = \sum_\tau reward(\tau) p_\theta(\tau) \frac{\nabla p_\theta(\tau)} {p_\theta(\tau)} \\ = \sum_\tau reward(\tau) p_\theta(\tau) \nabla logp_\theta(\tau) \\ = E_{\tau -p_\theta(\tau)}[reward(\tau)\nabla logp_\theta(\tau)] \\ \approx \frac1n \sum_{\tau=1}^n reward(\tau)\nabla logp_\theta(\tau)\\
+\nabla R_\theta = \sum_\tau reward(\tau) \nabla p_\theta(\tau) \\
+= \sum_\tau reward(\tau) p_\theta(\tau) \frac{\nabla p_\theta(\tau)} {p_\theta(\tau)} \\
+= \sum_\tau reward(\tau) p_\theta(\tau) \nabla logp_\theta(\tau) \\
+= E_{\tau -p_\theta(\tau)}[reward(\tau)\nabla logp_\theta(\tau)] \\
+\approx \frac1n \sum_{\tau=1}^n reward(\tau)\nabla logp_\theta(\tau)\\
 $$
 
 以上推式很容易得到，重要的问题是 $\nabla logp_\theta(\tau)$ 是什么？或者说，如何将 Gradient 传导至模型参数 $\theta$ ? 首先我们逐步拆解 $p_{\theta}(\tau)$ :
@@ -25,7 +29,8 @@ $$
 上述式子中， $s$ 表示环境状态， $a$ 表示模型动作， $p(s_{\tau 1})$ 是这条路径的初始环境状态产生的概率， $p_{\theta}(a_{\tau 1}|s_{\tau 1})$ 表示在初始环境状态下模型产生动作 $a_{\tau 1}$ 的概率， $p(s_{\tau2}|s_{\tau1},a_{\tau1})$ 表示在产生 $s_{\tau 1}$ 环境状态以及模型产生 $a_{\tau 1}$ 动作后，产生新环境状态 $s_{\tau 2}$ 的概率（即模型第一步干预后）， $p_{\theta}(a_{\tau 2} | s_{\tau 2})$ 即新环境状态出现后模型产生动作 $a_{\tau 2}$ 的概率，以此类推。那么，当我们计算 Gradient 时，由于 Log 函数变成了加法，和 $\theta$ 的无关项都可忽略，梯度推导式又变成了如下：
 
 $$
-\nabla R=\frac1n \sum_{\tau=1}^n reward(\tau) \sum_{t=1}^{T_\tau}   \nabla logp_{\theta}(a_{\tau t}|s_{\tau t}) \\ =\frac1n \sum_{\tau=1}^n \sum_{t=1}^{T_\tau}  reward(\tau)  \nabla logp_{\theta}(a_{\tau t}|s_{\tau t}) \\
+\nabla R=\frac1n \sum_{\tau=1}^n reward(\tau) \sum_{t=1}^{T_\tau}   \nabla logp_{\theta}(a_{\tau t}|s_{\tau t}) \\
+=\frac1n \sum_{\tau=1}^n \sum_{t=1}^{T_\tau}  reward(\tau)  \nabla logp_{\theta}(a_{\tau t}|s_{\tau t}) \\
 $$
 
 以上就是 Policy Gradient 的最终算式。从该算式不难看出：如果某条路径总体是正反馈，那该条路径上每一步的环境状态对应的模型动作都会无脑给予正反馈，否则都会无脑惩罚，当采集的路径足够多后，模型就期望能收敛。而 $p_{\theta}(a|s)$ 其实就是一个神经网络的对应动作 channel 在输入为 s 情况下的输出值。
@@ -37,7 +42,12 @@ $$
 我们直接推导到最后：
 
 $$
-\nabla R_\theta = \sum_\tau reward(\tau) p_\theta(\tau) \nabla logp_\theta(\tau) \\ = \sum_\tau reward(\tau) p_{\theta'}(\tau) \frac{p_{\theta}(\tau)}{p_{\theta'}(\tau)} \nabla logp_\theta(\tau) \\  = E_{\tau -p_{\theta'}(\tau)}[\frac{p_{\theta}(\tau)}{p_{\theta'}(\tau)} reward(\tau)\nabla logp_\theta(\tau)] \\  \approx \frac1n \sum_{\tau=1}^n \frac{p_{\theta}(\tau)}{p_{\theta'}(\tau)} reward(\tau)\nabla logp_\theta(\tau),\ 用\theta'采样\\  =\frac1n \sum_{\tau=1}^n \frac{ p(s_{\tau1})p_\theta(a_{\tau1}|s_{\tau1})p(s_{\tau2}|s_{\tau1},a_{\tau1})p_\theta(a_{\tau2}|s_{\tau2})... }{ p(s_{\tau1})p_{\theta'}(a_{\tau1}|s_{\tau1})p(s_{\tau2}|s_{\tau1},a_{\tau1})p_{\theta'}(a_{\tau2}|s_{\tau2})... } reward(\tau) \sum_{t=1}^{T_\tau}   \nabla logp_{\theta}(a_{\tau t}|s_{\tau t}) \\  \approx \frac1n \sum_{\tau=1}^n \sum_{t=1}^{T_\tau} \frac{p_{\theta}(a_{\tau t}|s_{\tau t})}{p_{\theta'}(a_{\tau t}|s_{\tau t})} reward(\tau) \nabla logp_\theta(a_{\tau t}|s_{\tau t})  \\
+\nabla R_\theta = \sum_\tau reward(\tau) p_\theta(\tau) \nabla logp_\theta(\tau) \\
+= \sum_\tau reward(\tau) p_{\theta'}(\tau) \frac{p_{\theta}(\tau)}{p_{\theta'}(\tau)} \nabla logp_\theta(\tau) \\
+= E_{\tau -p_{\theta'}(\tau)}[\frac{p_{\theta}(\tau)}{p_{\theta'}(\tau)} reward(\tau)\nabla logp_\theta(\tau)] \\
+\approx \frac1n \sum_{\tau=1}^n \frac{p_{\theta}(\tau)}{p_{\theta'}(\tau)} reward(\tau)\nabla logp_\theta(\tau),\ 用\theta'采样\\
+=\frac1n \sum_{\tau=1}^n \frac{ p(s_{\tau1})p_\theta(a_{\tau1}|s_{\tau1})p(s_{\tau2}|s_{\tau1},a_{\tau1})p_\theta(a_{\tau2}|s_{\tau2})... }{ p(s_{\tau1})p_{\theta'}(a_{\tau1}|s_{\tau1})p(s_{\tau2}|s_{\tau1},a_{\tau1})p_{\theta'}(a_{\tau2}|s_{\tau2})... } reward(\tau) \sum_{t=1}^{T_\tau}   \nabla logp_{\theta}(a_{\tau t}|s_{\tau t}) \\
+\approx \frac1n \sum_{\tau=1}^n \sum_{t=1}^{T_\tau} \frac{p_{\theta}(a_{\tau t}|s_{\tau t})}{p_{\theta'}(a_{\tau t}|s_{\tau t})} reward(\tau) \nabla logp_\theta(a_{\tau t}|s_{\tau t})  \\
 $$
 
 从推导过程可以看出，现在只需使用另一个模型 $\theta'$ 进行路径采样，就能直接计算本模型 $\theta$ 的梯度。这其中最有意思的是 $\frac {p_\theta(a|s)}{p_{\theta'}(a|s)}$ 这一项，如果代理模型相比本模型在某一状态的动作反馈度之比高很多，那就会极致地压低这一sample的训练影响，相反，如果本模型相对高则会增强。这里或多或少传达出一些哲学思辩：当我们发现某些人在某环境下相对高概率做某事，会觉得这是一种独特于他的特例从而降低学习他的比重；同时当我们在某环境下相对高概率做某事时，一旦发现其他人一不小心（即低概率）做了相同的事情并收到反馈，那我们也会对这一反馈记忆犹新。也即 Agent 学习它认为重要的事情 (i.e. Important Sampling)。
@@ -45,13 +55,18 @@ $$
 用以上推导的梯度公式进行学习(Off-Policy)会产生一个问题，如果代理模型的与本模型差异过大，可能采用到的路径相对本模型来说是基本不会走到的，这会极大降低学习效率，因此会有一个正则项来(KL散度)惩罚代理模型的差异，因此我们可以得到 PPO 的标准公式：
 
 $$
-\nabla J_{PPO}^{\theta'}(\theta) = \\\frac1n \sum_{\tau=1}^n \sum_{t=1}^{T_\tau} \frac{p_{\theta}(a_{\tau t}|s_{\tau t})}{p_{\theta'}(a_{\tau t}|s_{\tau t})} reward(\tau) \nabla logp_\theta(a_{\tau t}|s_{\tau t})  \\ - \beta \nabla KL(\theta, \theta') \\
+\nabla J_{PPO}^{\theta'}(\theta) = \\
+\frac1n \sum_{\tau=1}^n \sum_{t=1}^{T_\tau} \frac{p_{\theta}(a_{\tau t}|s_{\tau t})}{p_{\theta'}(a_{\tau t}|s_{\tau t})} reward(\tau) \nabla logp_\theta(a_{\tau t}|s_{\tau t})  \\
+- \beta \nabla KL(\theta, \theta') \\
 $$
 
 我们再对上面这个式子进行化简并裁，得到优化后的PPO公式：
 
 $$
-J_{PPO}^{\theta'} = \sum_{(s, a)}min(\\ \frac{p_\theta(a|s)}{p_{\theta'}(a|s)}A^{\theta'}(s, a),\\ clip(\frac{p_\theta(a|s)}{p_{\theta'}(a|s)}, 1-\epsilon, 1+\epsilon)A^{\theta'}(s, a)\\ ) - \beta KL(\theta, \theta') \\
+J_{PPO}^{\theta'} = \sum_{(s, a)}min(\\
+\frac{p_\theta(a|s)}{p_{\theta'}(a|s)}A^{\theta'}(s, a),\\
+clip(\frac{p_\theta(a|s)}{p_{\theta'}(a|s)}, 1-\epsilon, 1+\epsilon)A^{\theta'}(s, a)\\
+) - \beta KL(\theta, \theta') \\
 $$
 
 上式中 $A^{\theta'}(s, a)$ 表示当在环境状态 $s$ 下代理模型产生 $a$ 动作能在未来获取多少Reward总和(再减去Baseline)，也可以笼统称为优势函数。
@@ -150,7 +165,10 @@ if __name__ == '__main__':
 这是一种PPO的改进，对一个输入问题 $q$ ，采集代理模型的多种输出序列 $\{o1, o2, ..., o_G\}$ 并更新本模型，其优化的目标函数如下:
 
 $$
-J_{GRPO}^{\theta'} = \frac 1G \sum_{i=1}^Gmin(\\ \frac{p_\theta(o_i|q)}{p_{\theta'}(o_i|q)}A^{\theta'}(q,o_i),\\ clip(\frac{p_\theta(o_i|q)}{p_{\theta'}(o_i|q)}, 1-\epsilon, 1+\epsilon)A^{\theta'}(q,o_i)\\ ) - \beta KL(\theta, \theta') \\
+J_{GRPO}^{\theta'} = \frac 1G \sum_{i=1}^Gmin(\\
+\frac{p_\theta(o_i|q)}{p_{\theta'}(o_i|q)}A^{\theta'}(q,o_i),\\
+clip(\frac{p_\theta(o_i|q)}{p_{\theta'}(o_i|q)}, 1-\epsilon, 1+\epsilon)A^{\theta'}(q,o_i)\\
+) - \beta KL(\theta, \theta') \\
 $$
 
 这其中优势函数是经过标准化的：
