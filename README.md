@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="./misc/./sl.svg" width="120" alt="scaling-ladder" />
-</p>
-
 ## 文章目录
 
-- [从零写一个PPO强化学习训练吃豆人](./blogs/how-to-write-ppo/ppo-wechat.html)
+- [AMD-GPU 中的 Bank Conflict 解析 (MI355)](./blogs/mi355x-bank-conflict/README.md)
