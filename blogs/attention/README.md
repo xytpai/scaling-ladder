@@ -67,7 +67,7 @@ d 较大时 `s / sqrt(d) ≈ N(0, 1)`。两项时用上面的 `w_a`。d=128 时 
 
 ## MHA
 
-每个头一套投影，RoPE 打在整头上。注意力就是上面那条式子，matmul 加 softmax，不经过 Flash Attention。
+每个头一套投影，RoPE 打在整头上。注意力就是上面那条式子，matmul 加 softmax，分数矩阵直接算出来。
 
 ```text
 Q = RoPE(Wq h)    # [B, S, H, d]
