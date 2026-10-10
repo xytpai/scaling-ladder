@@ -65,8 +65,6 @@ d 较大时 `s / sqrt(d) ≈ N(0, 1)`。两项时用上面的 `w_a`。d=128 时 
 
 多头是把这个 d 切成 H 份，每份单独做上面这套，再拼回去。每一头有自己的 Wq、Wk、Wv，点积发生在不同的子空间里，可以匹配不同的关系。每一头都带同一个因果掩码。后面改的是这三套投影怎么存、S×S 怎么算，带掩码的加权平均这一步不变。
 
-下面四节按这个顺序：普通 MHA 用 PyTorch 把 S×S 直接拼出来，GQA 让多头共用一份 K/V，Flash Attention 用 Triton 分块算同一条式子，MLA 再把内容压进一条低秩向量。MHA 和 MLA 的宽度用 DeepSeek-V2：D=5120，H=128，d=128。GQA 在同一宽度上把 KV 头收成 8。
-
 ## MHA
 
 每个头一套投影，RoPE 打在整头上。注意力就是上面那条式子，matmul 加 softmax，不经过 Flash Attention。
