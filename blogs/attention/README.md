@@ -65,7 +65,7 @@ d 较大时 `s / sqrt(d) ≈ N(0, 1)`。两项时用上面的 `w_a`。d=128 时 
 
 多头是把这个 d 切成 H 份，每份单独做上面这套，再拼回去。每一头有自己的 Wq、Wk、Wv，点积发生在不同的子空间里，可以匹配不同的关系。每一头都带同一个因果掩码。后面改的是这三套投影怎么存、S×S 怎么算，带掩码的加权平均这一步不变。
 
-## MHA
+## MHA（Multi-Head Attention）
 
 每个头一套投影，RoPE 打在整头上。注意力就是上面那条式子，matmul 加 softmax，分数矩阵直接算出来。
 
@@ -128,9 +128,9 @@ class MultiHeadAttention(nn.Module):
 
 解码时历史 token 的 K、V 都要留着，每个 token 是 **2 × H × d** 个数。S 一长，缓存按头数线性涨。
 
-## GQA
+## GQA（Grouped-Query Attention）
 
-Q 仍然是 H 头。K、V 只投影 `n_kv_heads` 头，`H` 必须整除 `n_kv_heads`。一组里有 `n_rep = H / n_kv_heads` 个 query 头，算注意力前把每份 K、V 在头维重复 `n_rep` 次，后面的 matmul 和 MHA 相同。`n_kv_heads = H` 时就是上一节；`n_kv_heads = 1` 时是 MQA，所有 query 头共用一份 K、V。
+Q 仍然是 H 头。K、V 只投影 `n_kv_heads` 头，`H` 必须整除 `n_kv_heads`。一组里有 `n_rep = H / n_kv_heads` 个 query 头，算注意力前把每份 K、V 在头维重复 `n_rep` 次，后面的 matmul 和 MHA 相同。`n_kv_heads = H` 时就是上一节；`n_kv_heads = 1` 时是 MQA（Multi-Query Attention），所有 query 头共用一份 K、V。
 
 ```text
 Q = RoPE(Wq h)                 # [B, S, H, d]
@@ -256,7 +256,7 @@ def flash_attention(q, k, v):
 
 省的是训练时那张 **S×S** 分数矩阵。投影还是 MHA 或 GQA，缓存大小不变。
 
-## MLA
+## MLA（Multi-head Latent Attention）
 
 K、V 的内容不按头各存一份。h 先压成低秩 `c_KV`（秩 r），各头的内容 K 和 V 都从它乘出来。位置不进 `c_KV`：另外做一条所有头共享的短 key `k^R`（宽 d_rope），RoPE 只打在这里。Q 同样先压到秩 r_q，再拆成内容 q^C（宽 d_nope）和 RoPE 部分 q^R（宽 d_rope）。
 
@@ -385,7 +385,7 @@ def lightning_attention(q, k, v, lam, block=64):
 
 λ 不看输入。所有通道、所有 token 用同一个衰减。
 
-## GLA
+## GLA（Gated Linear Attention）
 
 Gated Linear Attention 把 λ 换成每个 token、每个通道各一个 α，由当前输入算出来，落在 (0, 1)。衰减乘在 key 那一维上：
 
@@ -410,7 +410,7 @@ def gated_linear_attention(q, k, v, alpha):
 
 和 Lightning 的差别只在 α 是向量，而且每个位置重新算。训练时这一递推写成按块的并行扫描，数学相同。
 
-## KDA
+## KDA（Kimi Delta Attention）
 
 Kimi Linear 的 Kimi Delta Attention。在 GLA 的逐通道衰减上再加 DeltaNet 的覆盖：先把旧状态按 α 衰减，再沿着当前 key 的方向，用 `v_t - k_t S` 把这条关联改写成新的 v。k 先做 L2 归一化，β 是 (0, 1) 的标量写入强度。
 
