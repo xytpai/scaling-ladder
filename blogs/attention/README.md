@@ -300,17 +300,18 @@ def flash_attention(q, k, v):
 
 ## MLA（Multi-head Latent Attention）
 
-K、V 的内容不按头各存一份。h 先压成低维 `c_KV`（宽 r，对应低秩投影的瓶颈维度），各头的内容 K 和 V 都从它乘出来。不直接对 `c_KV` 施加 RoPE（不代表隐状态里完全没有位置信息）：另外做一条所有头共享的短 key `k^R`（宽 d_rope），在 K 侧，RoPE 只打在这个独立分支。本例沿用 DeepSeek-V2 的一种配置：Q 也先压到维度 r_q，再拆成内容 q^C（宽 d_nope）和 RoPE 部分 q^R（宽 d_rope）。低秩 Q 投影不用于减少 KV cache，也不是所有 MLA 配置都必须有（例如 DeepSeek-V2-Lite 不压缩 Q）。这里省略了实际模型中的 latent RMSNorm 等组件。[6]
+**Attention 核心与 MHA 相同，仍是 `softmax(scale × QKᵀ + mask)V`；MLA 改的是模块外的投影和缓存。** 下图采用吸收 K/V 投影后的等价路径，每个 token 只缓存共享编码 C 和短 RoPE key。[6]
 
-```text
-c_KV     = W_DKV h                 # 宽 r
-K_nope   = W_UK c_KV               # 每头 d_nope
-V        = W_UV c_KV               # 每头 d_v
-k^R      = RoPE(W_KR h)            # 宽 d_rope，所有头共用
-Q        = [q^C ; q^R]             # 每头 d_nope + d_rope
-K        = [K_nope ; k^R]
-# scores = q · k / sqrt(d_nope + d_rope)
-```
+![MLA 节点图：统一 Linear(in→out)，权重为[out,in]或逐头[H,out,in]；RoPE、缓存 Cat(dim=1)、Q/K 特征 Cat(dim=-1)均独立成节点；共享缓存接入 Attention，输出再经逐头 Linear、MergeHeads 和输出 Linear](./images/mla.png)
+
+图中所有投影统一标为 `Linear(in → out)`，权重采用 `[out,in]`；逐头权重为 `[H,out,in]`。`Q_latent` 是逐头 `Linear(d_c → r)`，复用原 K 上投影权重的转置，**不是新增参数**。RoPE、缓存拼接 `Cat(dim=1)`、Q/K 特征拼接 `Cat(dim=-1)` 均独立成节点。
+
+**T 是本次输入长度，S 是追加后的缓存长度**；`d_c/d_r` 对应 `nope_dim/rope_dim`。模块内 K/V 的头轴 1 广播到 H；**scale 必须显式设为 `1/sqrt(d_c+d_r)`**，不能用吸收后 Q 宽度的默认值。算子相同不代表整个层等于 MHA：各头投影不同，缓存共享，V 投影移到 Attention 之后。
+
+<details>
+<summary>展开查看代码（教学版先展开 K/V，未实现图中的优化解码）</summary>
+
+`c = W_DKV h`；各头内容 K/V 由 `W_UK c`、`W_UV c` 生成。下面保留显式展开路径，方便对照模型结构，未实现 KV-cache 接口。Q 的低秩投影是可选配置，省略 latent RMSNorm 等组件。
 
 ```python
 class MultiHeadLatentAttention(nn.Module):
@@ -330,28 +331,26 @@ class MultiHeadLatentAttention(nn.Module):
     def forward(self, x):
         b, s, _ = x.shape
         h = self.n_heads
-        c_kv = self.w_dkv(x)  # [B, S, kv_rank]，解码时缓存这个
+        c_kv = self.w_dkv(x)  # [B, S, kv_rank]：每个 token 一份，所有头共享
+        # 教学路径：先展开各头 K/V。优化解码则直接对 c_kv 打分、加权。
         k_nope = self.w_uk(c_kv).view(b, s, h, self.nope_dim)
         v = self.w_uv(c_kv).view(b, s, h, self.v_dim)
         c_q = self.w_dq(x)
         q_nope = self.w_uq(c_q).view(b, s, h, self.nope_dim)
         q_pe = rope(self.w_qr(c_q).view(b, s, h, self.rope_dim))
+        # RoPE key 原本只有一头；expand 只是为下面拼接形状对齐。
         k_pe = rope(self.w_kr(x).unsqueeze(2)).expand(b, s, h, self.rope_dim)
         q = torch.cat((q_nope, q_pe), dim=-1)
         k = torch.cat((k_nope, k_pe), dim=-1)  # 内容来自低秩，位置来自共享 k_pe
-        # 解码缓存: c_kv [B, S, kv_rank]，共享 k^R [B, S, rope_dim]
+        # 真正的解码缓存只需 c_kv 和 expand 之前的共享 k^R；本函数未实现缓存接口。
         # 这里用和 MHA 相同的 matmul。QK 宽 d_nope+d_rope，V 宽 d_v；不能直接换成上一节等宽的 kernel。
         y = attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
         return self.w_o(y.transpose(1, 2).reshape(b, s, h * self.v_dim))
 ```
 
-`rope` 和 `attention` 是 MHA 那一节的函数。点积宽度是 **d_nope + d_rope**，缩放换成 `1/sqrt(d_nope + d_rope)`。V 宽是 d_v，所以一头的输出宽度跟 K 的宽度不必相同。上一节的 kernel 把 QK 宽度和 V 宽度写成同一个 `HEAD_DIM`；MLA 要分成 d_nope+d_rope 和 d_v 两套。
+QK 宽为 `d_nope+d_rope`，V 宽为 `d_v`，不能直接套用前面只支持等宽 Q/K/V 的 Flash kernel。吸收投影后的缩放仍按原 QK 宽，不能改用 latent 宽 r。
 
-解码缓存是 `c_KV` 和 `k^R`，每个 token **r + d_rope** 个数。同一套符号下，MHA 是 2Hd，GQA 是 2 × n_kv × d。
-
-关键不是“没有解耦就不能缓存”，而是**能否避免每步把缓存展开成多头 K/V**。若像普通 MHA 那样对投影后的内容 K/Q 施加 RoPE，`q^T R_i^T R_j W_UK c_KV` 中的位置相关旋转夹在投影之间，一般不能把 `W_UK` 吸收到一个与历史位置 j 无关的 query 投影里。仍可缓存 latent 后重建历史 K，或缓存完整旋转 K，但会付出重建开销或失去小缓存优势。另开 `k^R/q^R` 分支后，内容路径不直接做 RoPE，才保留下面的吸收优化；直接旋转 latent 也不能视为与旋转投影后的 K 等价。
-
-解码时内容分不必先乘成 H 份 K。`(W_UK^T q^C)` 直接和缓存里的 `c_KV` 做点积，`W_UV` 留到加权之后。`k^R` 仍和 `q^R` 单独点积，加进同一个 score。
+</details>
 
 ---
 
