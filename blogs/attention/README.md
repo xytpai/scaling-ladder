@@ -208,7 +208,7 @@ m     = m_new                             # 为下一块更新基准
 # 可见 KV 块扫完：Out_blk = acc / ℓ         # 按行广播相除
 ```
 
-<details>
+<details markdown="1">
 <summary>展开查看 FlashAttention 代码（Triton 因果前向，无 backward）</summary>
 
 下面是与图对应的 **Triton 因果前向教学实现**。一个 program 管一个 query 块（`BLOCK_M` 行）和一对 `(batch, head)`。仅支持等长自注意力，Q/K/V 均为 `[B,H,S,D]`、fp16 或 bf16，且 V 宽等于 QK 宽。这里 `tl.arange(0, HEAD_DIM)` 要求 2 的幂，封装限定 D 为 **16、32、64、128、256**；96 等宽度需要另加 padding 与维度 mask，不能直接传入。
@@ -327,7 +327,7 @@ y = W₂(W₁x) = (W₂W₁)x
 
 **T 是本次输入长度，S 是追加后的缓存长度**；`d_c/d_r` 对应 `nope_dim/rope_dim`。K/V 的头轴 1 广播到 H；**scale 仍为 `1/sqrt(d_c+d_r)`**，不能改成 latent 宽度的默认缩放。
 
-<details>
+<details markdown="1">
 <summary>展开查看代码（教学版先展开 K/V，未实现图中的优化解码）</summary>
 
 `c = W_DKV h`；各头内容 K/V 由 `W_UK c`、`W_UV c` 生成。下面保留显式展开路径，方便对照模型结构，未实现 KV-cache 接口。Q 的低秩投影是可选配置，省略 latent RMSNorm 等组件。
