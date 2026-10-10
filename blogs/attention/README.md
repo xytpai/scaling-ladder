@@ -377,15 +377,19 @@ softmax 那几节的缓存跟着 S 涨。下面的线性递推把历史收成固
 
 ## Linear Attention
 
-`softmax(QK^T)V` 一般不能直接重结合成 `Q(K^T V)`，障碍是中间的 softmax，和矩阵乘法是否“可交换”不是一回事。这里改用相似度 `φ(q)·φ(k)`，再利用矩阵乘法结合律先把 K、V 累积成状态；`elu+1` 定义的是另一种核，并非 softmax 指数核的精确分解。[7]
+普通 Attention 和这里的 Linear Attention，都可以先看成**“相似度加权的 V 之和，再除以相似度之和”**。区别在于相似度如何计算，以及历史信息能否提前累积。[7]
 
-本节开始，递推公式把 q/k/v 视为行向量（与前面 `q = Wq h` 的列向量投影记法区分）；S_t 表示状态矩阵，不是序列长度 S：
+![从普通 Attention 到 Linear Attention：先将 softmax 展开为指数加权和除以指数和，再将指数核替换成 φ(q)φ(k)转置，最后用结合律将历史项累积为 S_t 和 z_t；核替换不是等价变形](./images/attention-to-linear.png)
 
-```text
-S_t = S_{t-1} + φ(k_t)^T v_t
-z_t = z_{t-1} + φ(k_t)
-y_t = φ(q_t) S_t / (φ(q_t)·z_t)
-```
+1. **普通 Attention：**相似度是 `exp(q·k/sqrt(Dk))`。它把当前 Q 和每个历史 K 放在同一个指数里，不能直接用结合律改成 `Q(K^T V)`。
+2. **换成可分解的相似度：**用 `φ(q)·φ(k)` 代替指数核；本例 `φ=elu+1`。**这一步改变了算子，并非 softmax 的等价变形**，但仍通过分母把权重归一化。也有方法用特征映射近似指数核，不代表这里的 `elu+1` 就是这种近似。
+3. **把历史累积起来：**对于当前 token t，`φ(q_t)` 与求和下标 j 无关，可以移到求和外。剩下两项只含历史 K/V：`S_t` 累积外积，`z_t` 累积 key 特征；新 token 到来时各加一项，就得到下面的递推。
+
+因此，“linear”指的是**特征宽度固定时，整段序列的计算量随长度线性增长**：不计投影，本例单头每 token 更新/读取为 O(Dk×Dv)，长度 S 时为 O(S×Dk×Dv)，而不是说整个函数没有非线性。解码只需保留 `S_t[Dk,Dv]` 与 `z_t[1,Dk]`，不再逐个读取所有历史 K/V；这里 `φ` 不改变特征宽度。若换用宽 m 的特征映射，状态相应变为 `[m,Dv]` 和 `[1,m]`。
+
+下面的公式采用行向量约定；`S_t` 是状态矩阵，不是序列长度 S。两份状态从 0 开始，按时间累积自然实现因果约束：
+
+![Linear Attention 因果递推公式：S_t 累积 φ(k_t) 与 v_t 的外积，z_t 累积 φ(k_t)，输出为 φ(q_t)S_t 除以 φ(q_t)·z_t](./images/linear-attention-equations.png)
 
 φ 用 `elu(x)+1`，数学上为正；有限精度下极负输入可能舍入到 0，所以代码在分母加 ε。`S` 是 `[Dk, Dv]`，`z` 是归一化用的分母。因果掩码变成按时间累加，解码只留 `S` 和 `z`。
 
@@ -420,12 +424,7 @@ Lightning Attention-2 是线性注意力的高效分块算法，不是靠更换 
 
 Lightning Attention-2 论文在 TransNormerLLM 上验证该算法；MiniMax-01 采用 Lightning Attention 与 softmax attention 混合的结构，并有自己的工程优化，不能泛指所有 MiniMax 模型或说它们都逐行使用本示例代码。[8][9]
 
-```text
-M_ij = λ^{i-j}    i >= j，否则 0
-O_intra = (Q K^T ⊙ M) V
-O_inter = (Q ⊙ λ^{pos+1}) S_prev
-S       = λ^n S_prev + (K ⊙ λ^{n-1-pos})^T V
-```
+![Lightning Attention-2 分块公式：因果衰减 M、块内输出 O_intra、块间输出 O_inter 和状态 S 更新；pos 从 0 到 n−1，衰减按 token 行广播](./images/lightning-attention-equations.png)
 
 `pos` 是块内下标，`n` 是块长。`λ^{pos+1}` 是因为 `S_prev` 已经是上一 token 写完的状态，当前 token 读之前还要再衰减一次。
 
