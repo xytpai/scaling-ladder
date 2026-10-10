@@ -1,15 +1,35 @@
-# Attention 中的 MHA、GQA、Flash Attention 与 MLA
+# 一文读懂 Attention：MHA、GQA、Flash Attention、MLA 与 Linear Attention
 
-自注意力：每个 token 用自己的 Q 和全部 K 做点积，softmax 后去加权 V。序列长度 S、头宽 d 时，分数矩阵是 **S×S**，缩放是 `1/sqrt(d)`。
+因果自注意力：第 i 个 token 只用自己的 Q 去和 j≤i 的 K 做点积，softmax 后加权这些位置的 V。序列长度 S、头宽 d 时，分数矩阵仍是 **S×S**，上三角在进 softmax 之前是 -inf。缩放是 `1/sqrt(d)`。
 
 ```text
-scores = Q K^T / sqrt(d)
-out    = softmax(scores) V
+scores = (Q @ K.T) / sqrt(d)          # [S, d] @ [d, S] -> [S, S]
+scores = mask(scores, j > i, -inf)    # 第 i 行只能看见 j≤i
+out    = softmax(scores) @ V          # [S, S] @ [S, d] -> [S, d]
 ```
 
-Q、K、V 都从同一条隐状态 h（`[B, S, D]`）投影出来。头数 H，一头内容宽 d。下面四节按这个顺序：普通 MHA 用 PyTorch 把 S×S 直接拼出来，GQA 让多头共用一份 K/V，Flash Attention 用 Triton 分块算同一条式子，MLA 再把内容压进一条低秩向量。
+先看一头。Q、K、V 都是 `[S, d]`，但三个矩阵做的事不一样。同一个 token 的隐状态 h_i 用三套权重投出去：
 
-MHA 和 MLA 的宽度用 DeepSeek-V2：D=5120，H=128，d=128。GQA 在同一宽度上把 KV 头收成 8。
+```text
+q_i = Wq h_i    # 我要找什么
+k_i = Wk h_i    # 别人拿什么来匹配我
+v_i = Wv h_i    # 匹配上之后被拿走的内容
+```
+
+`(Q @ K.T)` 的第 i 行第 j 列是一个标量 `q_i · k_j`：第 i 个 token 用自己的查询，去对第 j 个 token 的键。打分只用 Q 和 K。V 不参加比较，只在权重出来之后被加进去。所以「像不像」和「拿走什么」是分开的两件事，K 和 V 可以完全不同。
+
+第 i 行里，j>i 的位置已经是 -inf，softmax 之后权重是 0，不进入求和。剩下 j≤i 的分数变成和为 1 的权重，再对对应的 V 行求加权平均。S 这个轴被加掉，输出第 i 行仍是 d 维，而且只含当前位置和过去的 V。每个位置的输出长度等于 V 的宽度，不等于序列长度。
+
+```text
+w_ij = softmax_{j≤i}(q_i · k_j / sqrt(d))
+o_i  = sum_{j≤i} w_ij v_j
+```
+
+`/sqrt(d)` 是为了让 softmax 不要饱和。q、k 每个分量近似独立、均值 0、方差 1 时，点积是 d 个乘积的和，方差是 d，标准差是 sqrt(d)。d=128 时，点积的典型幅度是十几，exp 之后最大的那一项几乎拿走全部权重，一行 softmax 接近 one-hot。除掉 sqrt(d)，分数的方差回到 1 附近，权重才能同时落在多个已经看见的 token 上。
+
+多头是把这个 d 切成 H 份，每份单独做上面这套，再拼回去。每一头有自己的 Wq、Wk、Wv，点积发生在不同的子空间里，可以匹配不同的关系。每一头都带同一个因果掩码。后面改的是这三套投影怎么存、S×S 怎么算，带掩码的加权平均这一步不变。
+
+下面四节按这个顺序：普通 MHA 用 PyTorch 把 S×S 直接拼出来，GQA 让多头共用一份 K/V，Flash Attention 用 Triton 分块算同一条式子，MLA 再把内容压进一条低秩向量。MHA 和 MLA 的宽度用 DeepSeek-V2：D=5120，H=128，d=128。GQA 在同一宽度上把 KV 头收成 8。
 
 ## MHA
 
