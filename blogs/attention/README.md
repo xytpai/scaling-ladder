@@ -1,4 +1,4 @@
-# 一文读懂 Attention：MHA、GQA、Flash Attention、MLA 与 Linear Attention
+# 一文读懂 Attention：MHA、GQA、FlashAtt、MLA 与 LinearAtt
 
 因果自注意力：第 i 个 token 只用自己的 Q 去和 j≤i 的 K 做点积，softmax 后加权这些位置的 V。序列长度 S、头宽 d 时，分数矩阵仍是 **S×S**，上三角在进 softmax 之前是 -inf。缩放是 `1/sqrt(d)`。
 
