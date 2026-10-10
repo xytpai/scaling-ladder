@@ -124,9 +124,9 @@ class MultiHeadAttention(nn.Module):
         return self.wo(y.transpose(1, 2).reshape(b, s, h * d))
 ```
 
-`Wq/Wk/Wv` 各是 D×(H×d)，`Wo` 是 (H×d)×D。这一层参数量 4×5120×128×128 = **3.36×10^8**。
+`Wq/Wk/Wv` 各是 D×(H×d)，`Wo` 是 (H×d)×D。这一层参数量 **4 × D × H × d**。
 
-解码时历史 token 的 K、V 都要留着，每个 token 是 2×H×d = 2×128×128 = **32768** 个数。S 一长，缓存按头数线性涨。
+解码时历史 token 的 K、V 都要留着，每个 token 是 **2 × H × d** 个数。S 一长，缓存按头数线性涨。
 
 ## GQA
 
@@ -166,7 +166,7 @@ class GroupedQueryAttention(nn.Module):
         return self.wo(y.transpose(1, 2).reshape(b, s, h * d))
 ```
 
-`n_kv_heads = 8` 时，16 个 query 头共用一份 K、V。`Wk/Wv` 从 D×(128×128) 收成 D×(8×128)。这一层参数量 **1.78×10^8**。每个 token 的缓存是 2×8×128 = **2048** 个数。
+每 `n_rep = H / n_kv` 个 query 头共用一份 K、V。`Wk/Wv` 从 D×(H×d) 收成 D×(n_kv×d)。每个 token 的缓存是 **2 × n_kv × d**。
 
 ## Flash Attention
 
@@ -258,16 +258,16 @@ def flash_attention(q, k, v):
 
 ## MLA
 
-K、V 的内容不按头各存一份。h 先压成低秩 `c_KV`（秩 r=512），各头的内容 K 和 V 都从它乘出来。位置不进 `c_KV`：另外做一条所有头共享的短 key `k^R`（宽 d_rope=64），RoPE 只打在这里。Q 同样先压到秩 1536，再拆成内容 q^C 和 RoPE 部分 q^R。
+K、V 的内容不按头各存一份。h 先压成低秩 `c_KV`（秩 r），各头的内容 K 和 V 都从它乘出来。位置不进 `c_KV`：另外做一条所有头共享的短 key `k^R`（宽 d_rope），RoPE 只打在这里。Q 同样先压到秩 r_q，再拆成内容 q^C（宽 d_nope）和 RoPE 部分 q^R（宽 d_rope）。
 
 ```text
-c_KV     = W_DKV h                 # [B, S, 512]
-K_nope   = W_UK c_KV               # [B, S, H, 128]
-V        = W_UV c_KV               # [B, S, H, 128]
-k^R      = RoPE(W_KR h)            # [B, S, 64]，所有头共用
-Q        = [q^C ; q^R]             # 每头 128+64
+c_KV     = W_DKV h                 # 宽 r
+K_nope   = W_UK c_KV               # 每头 d_nope
+V        = W_UV c_KV               # 每头 d_v
+k^R      = RoPE(W_KR h)            # 宽 d_rope，所有头共用
+Q        = [q^C ; q^R]             # 每头 d_nope + d_rope
 K        = [K_nope ; k^R]
-# scores = Q K^T / sqrt(128+64)
+# scores = q · k / sqrt(d_nope + d_rope)
 ```
 
 ```python
@@ -298,14 +298,14 @@ class MultiHeadLatentAttention(nn.Module):
         q = torch.cat((q_nope, q_pe), dim=-1)
         k = torch.cat((k_nope, k_pe), dim=-1)  # 内容来自低秩，位置来自共享 k_pe
         # 解码缓存: c_kv [B, S, kv_rank]，共享 k^R [B, S, rope_dim]
-        # 这里用和 MHA 相同的 matmul。QK 宽 192、V 宽 128，分块时换成上一节的 kernel。
+        # 这里用和 MHA 相同的 matmul。QK 宽 d_nope+d_rope，V 宽 d_v，分块时换成上一节的 kernel。
         y = attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2))
         return self.w_o(y.transpose(1, 2).reshape(b, s, h * self.v_dim))
 ```
 
-`rope` 和 `attention` 是 MHA 那一节的函数。点积宽度是 **192**，缩放换成 `1/sqrt(192)`。V 仍是 128，所以一头的输出宽度跟 K 的宽度不必相同。上一节的 kernel 把 QK 宽度和 V 宽度写成同一个 `HEAD_DIM`；MLA 要分成 192 和 128 两套。
+`rope` 和 `attention` 是 MHA 那一节的函数。点积宽度是 **d_nope + d_rope**，缩放换成 `1/sqrt(d_nope + d_rope)`。V 宽是 d_v，所以一头的输出宽度跟 K 的宽度不必相同。上一节的 kernel 把 QK 宽度和 V 宽度写成同一个 `HEAD_DIM`；MLA 要分成 d_nope+d_rope 和 d_v 两套。
 
-解码缓存是 `c_KV` 和 `k^R`：512+64 = **576** 个数。同一宽度下 MHA 是 32768，8 个 KV 头的 GQA 是 2048。这一层投影参数是 **1.49×10^8**（含 Q 的 1536 低秩、KV 的 512 低秩，以及把低秩乘回头宽的那几块）。
+解码缓存是 `c_KV` 和 `k^R`，每个 token **r + d_rope** 个数。同一套符号下，MHA 是 2Hd，GQA 是 2 × n_kv × d。
 
 RoPE 放在 `c_KV` 里面会和后面的线性层缠在一起：先乘矩阵再旋转，和先旋转再乘矩阵，结果不一样。位置留在 `k^R` 上，`c_KV` 才能按 token 缓存、用到时再投影。
 
@@ -313,7 +313,7 @@ RoPE 放在 `c_KV` 里面会和后面的线性层缠在一起：先乘矩阵再�
 
 ---
 
-softmax 那几节的缓存跟着 S 涨。Linear attention 把历史收成一块固定状态 `S`，每头一块 `d×d`，每个 token 的更新和读取都是 O(d²)。同一宽度 H=128、d=128 时，一层状态是 128×128×128 = **2.10×10⁶** 个数，和 S 无关。MHA 在 S=4096 时缓存是 32768×4096 = **1.34×10⁸**。下面几条都是在改 `S` 怎么写。
+softmax 那几节的缓存跟着 S 涨。Linear attention 把历史收成一块固定状态，每头一块 d×d，每个 token 的更新和读取都是 O(d²)。一层状态是 **H × d × d** 个数，和 S 无关。MHA 的缓存是 **S × 2 × H × d**。下面几条都是在改这块状态怎么写。
 
 ## Linear Attention
 
