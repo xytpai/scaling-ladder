@@ -8,6 +8,8 @@ scores = mask(scores, j > i, -inf)    # 第 i 行只能看见 j≤i
 out    = softmax(scores) @ V          # [S, S] @ [S, d] -> [S, d]
 ```
 
+![因果自注意力：第 i 行只对 j≤i 的 V 加权](./images/causal-attention.png)
+
 先看一头。Q、K、V 都是 `[S, d]`，但三个矩阵做的事不一样。同一个 token 的隐状态 h_i 用三套权重投出去：
 
 ```text
@@ -25,7 +27,26 @@ w_ij = softmax_{j≤i}(q_i · k_j / sqrt(d))
 o_i  = sum_{j≤i} w_ij v_j
 ```
 
-`/sqrt(d)` 是为了让 softmax 不要饱和。q、k 每个分量近似独立、均值 0、方差 1 时，点积是 d 个乘积的和，方差是 d，标准差是 sqrt(d)。d=128 时，点积的典型幅度是十几，exp 之后最大的那一项几乎拿走全部权重，一行 softmax 接近 one-hot。除掉 sqrt(d)，分数的方差回到 1 附近，权重才能同时落在多个已经看见的 token 上。
+`/sqrt(d)` 把点积的分布拉回标准尺度，softmax 才不会饱和。设各分量独立，q 与 k 也独立：
+
+```text
+E[q_m] = 0,   Var(q_m) = 1
+E[k_m] = 0,   Var(k_m) = 1
+
+s = q·k = Σ_m q_m k_m
+E[s] = 0,     Var(s) = d          # Var(q_m k_m) = E[q_m²]E[k_m²] = 1，d 项相加
+
+E[s / sqrt(d)] = 0,   Var(s / sqrt(d)) = 1
+```
+
+d 较大时 `s / sqrt(d) ≈ N(0, 1)`。两项 softmax 只看分差：`1 / (1 + exp(-(a-b)))`。d=128 时 `sqrt(Var(s)) = sqrt(128) ≈ 11`。分差为 4 的两个分数 12 和 8：
+
+```text
+不缩放:     σ(4)           ≈ 0.98 / 0.02
+除以 sqrt(d): σ(4/sqrt(128)) ≈ 0.59 / 0.41
+```
+
+除以 d 会把方差收成 1/d，分数挤在 0 附近，softmax 反过来变成接近均匀。除以 sqrt(d) 是让方差保持为 1 的那个尺度。
 
 多头是把这个 d 切成 H 份，每份单独做上面这套，再拼回去。每一头有自己的 Wq、Wk、Wv，点积发生在不同的子空间里，可以匹配不同的关系。每一头都带同一个因果掩码。后面改的是这三套投影怎么存、S×S 怎么算，带掩码的加权平均这一步不变。
 
@@ -40,6 +61,8 @@ Q = RoPE(Wq h)    # [B, S, H, d]
 K = RoPE(Wk h)
 V = Wv h
 ```
+
+RoPE 不把位置拼到向量后面，而是按位置旋转 Q 和 K。头宽 d 拆成 d/2 对，第 m 对在位置 pos 上转过的角度是 `pos / 10000^{2m/d}`。这样 `q_i · k_j` 只跟相对距离 i−j 有关，平移整段序列，分数不变。V 不旋转，位置只影响打分，不影响被拿走的内容。
 
 ```python
 import torch
