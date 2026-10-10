@@ -208,6 +208,9 @@ m     = m_new                             # 为下一块更新基准
 # 可见 KV 块扫完：Out_blk = acc / ℓ         # 按行广播相除
 ```
 
+<details>
+<summary>展开查看 FlashAttention 代码（Triton 因果前向，无 backward）</summary>
+
 下面是与图对应的 **Triton 因果前向教学实现**。一个 program 管一个 query 块（`BLOCK_M` 行）和一对 `(batch, head)`。仅支持等长自注意力，Q/K/V 均为 `[B,H,S,D]`、fp16 或 bf16，且 V 宽等于 QK 宽。这里 `tl.arange(0, HEAD_DIM)` 要求 2 的幂，封装限定 D 为 **16、32、64、128、256**；96 等宽度需要另加 padding 与维度 mask，不能直接传入。
 
 **它没有 backward，也没有 KV-cache 解码接口**；需要梯度时封装会报错，不能直接拿它替换训练层。GQA 可先 repeat 再调用；若改成直接读取 KV 分组，K/V 的头下标才改为 `off_h // n_rep`，同时要放宽封装的形状检查。
@@ -294,6 +297,8 @@ def flash_attention(q, k, v):
     return out
 ```
 
+</details>
+
 `alpha` 把上一块以旧最大值算出的 exp 对齐到新最大值。ℓ 是相对最终最大值平移后的指数和 `Σ exp(score−m)`，acc 使用同一个平移基准，二者相除才得到该行输出。它不是未经平移的 `Σ exp(score)`，但比值与 softmax 相同。内层循环只走到当前 query 块的右边界 `(start_m + 1) * BLOCK_M`，后面的 KV 块在因果掩码下全用不到。
 
 省的是训练/推理 prefill 时完整 **S×S** 中间矩阵的显存占用及其读写流量，不是把计算变成线性：计算量仍是 O(S²d)。真正的 FlashAttention 训练实现还需 backward（通过重算分数避免保存完整概率矩阵），本例未实现。数学上等价于普通 attention，浮点运算次序和低精度舍入可能带来小误差。投影还是 MHA 或 GQA，**KV cache 大小不变**。
@@ -304,9 +309,23 @@ def flash_attention(q, k, v):
 
 ![MLA 节点图：统一 Linear(in→out)，权重为[out,in]或逐头[H,out,in]；RoPE、缓存 Cat(dim=1)、Q/K 特征 Cat(dim=-1)均独立成节点；共享缓存接入 Attention，输出再经逐头 Linear、MergeHeads 和输出 Linear](./images/mla.png)
 
-图中所有投影统一标为 `Linear(in → out)`，权重采用 `[out,in]`；逐头权重为 `[H,out,in]`。`Q_latent` 是逐头 `Linear(d_c → r)`，复用原 K 上投影权重的转置，**不是新增参数**。RoPE、缓存拼接 `Cat(dim=1)`、Q/K 特征拼接 `Cat(dim=-1)` 均独立成节点。
+**矩阵吸收的本质：利用乘法结合律，把连续的线性变换合成一个。** 设 x 是列向量：
 
-**T 是本次输入长度，S 是追加后的缓存长度**；`d_c/d_r` 对应 `nope_dim/rope_dim`。模块内 K/V 的头轴 1 广播到 H；**scale 必须显式设为 `1/sqrt(d_c+d_r)`**，不能用吸收后 Q 宽度的默认值。算子相同不代表整个层等于 MHA：各头投影不同，缓存共享，V 投影移到 Attention 之后。
+```text
+W₁: [m,n]，W₂: [p,m]，x: [n]
+
+y = W₂(W₁x) = (W₂W₁)x
+令 W = W₂W₁  # [p,n]
+则 y = Wx
+```
+
+如果 W₁、W₂ 固定，可以先算好 W，此后每次输入只做一次变换。**改变的是计算的分组，不是乘法顺序**，一般不能把 W₂W₁ 换成 W₁W₂。
+
+中间若有 ReLU、softmax 等非线性，通常不能这样合并。权重更新后要重新计算合并矩阵；它可能减少中间张量和算子调用，但不保证总计算量更小或一定更快。
+
+图中投影统一标为 `Linear(in → out)`，权重为 `[out,in]`，逐头权重为 `[H,out,in]`；`Q_latent` 复用原 K 上投影权重的转置，不新增参数。
+
+**T 是本次输入长度，S 是追加后的缓存长度**；`d_c/d_r` 对应 `nope_dim/rope_dim`。K/V 的头轴 1 广播到 H；**scale 仍为 `1/sqrt(d_c+d_r)`**，不能改成 latent 宽度的默认缩放。
 
 <details>
 <summary>展开查看代码（教学版先展开 K/V，未实现图中的优化解码）</summary>
